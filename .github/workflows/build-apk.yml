@@ -1,0 +1,82 @@
+yaml
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag release tempat zip source disimpan"
+        required: true
+      build_type:
+        description: "debug atau release"
+        required: true
+        default: "debug"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Download source dari release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dl src
+          gh release download "${{ inputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "*.zip" --dir dl
+          unzip -q dl/*.zip -d src
+
+      - name: Cari folder project (pubspec.yaml)
+        id: proj
+        run: |
+          P=$(find src -name pubspec.yaml -not -path "*/.*" | head -1)
+          if [ -z "$P" ]; then echo "pubspec.yaml tidak ditemukan"; exit 1; fi
+          echo "dir=$(dirname "$P")" >> "$GITHUB_OUTPUT"
+
+      - name: Baca domain dari web2apk.json (kalau ada)
+        id: org
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          if [ -f web2apk.json ]; then
+            echo "org=$(jq -r '.org' web2apk.json)" >> "$GITHUB_OUTPUT"
+          else
+            echo "org=com.sakatacrasher" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Scaffold folder android
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: flutter create --platforms=android --org "${{ steps.org.outputs.org }}" .
+
+      - name: Pub get
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          if [ "${{ inputs.build_type }}" = "release" ]; then
+            flutter build apk --release
+          else
+            flutter build apk --debug
+          fi
+
+      - name: Upload hasil
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-apk          # nama ini WAJIB sama, bot mencarinya
+          path: ${{ steps.proj.outputs.dir }}/build/app/outputs/flutter-apk/*.apk
